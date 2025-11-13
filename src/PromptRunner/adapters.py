@@ -75,7 +75,7 @@ class LiteLLMAdapter(LLMClientAdapter):
         assert "messages" in query, "LiteLLM chat completion requires 'messages' in kwargs."
         response = await acompletion(model=self.model, api_key=self.api_key, **query)
         content = response.choices[0].message.content
-        reasoning_trace = self.extract_reasoning_trace(response.choices[0].message.content)
+        reasoning_trace = self.extract_reasoning_trace(response)
 
         return {"content": str(content), "reasoning_trace": str(reasoning_trace)}
 

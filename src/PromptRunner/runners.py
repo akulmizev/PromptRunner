@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from tqdm.asyncio import tqdm as atqdm
 from typing import Any, Dict, List
 
-from adapters import TogetherAIAdapter, LiteLLMAdapter, OllamaAdapter
+from .adapters import TogetherAIAdapter, LiteLLMAdapter, OllamaAdapter
 
 
 class BaseRunner(ABC):
@@ -44,18 +44,18 @@ class BaseRunner(ABC):
 
 class AsyncRunner(BaseRunner):
 
-    async def _run_single(self, messages: Dict[str, Any], semaphore: asyncio.Semaphore) -> Any:
-        """Run a single completion with semaphore control."""
-        async with semaphore:
-            query = {"messages": messages, **self.response_kwargs}
-            return await self.adapter.chat_completion(query)
-
-    async def run(self, message_list: List[Dict[str, Any]], max_concurrent: int = 1, **kwargs) -> List[Any]:
+    async def run_async(self, message_list: List[Dict[str, Any]], max_concurrent: int = 1, **kwargs) -> List[Any]:
+        """Async implementation of run."""
         semaphore = asyncio.Semaphore(max_concurrent)
 
-        tasks = [
-            self._run_single(messages, semaphore)
-            for messages in message_list
-        ]
+        async def run_with_semaphore(messages):
+            async with semaphore:
+                query = {"messages": messages, **self.response_kwargs}
+                return await self.adapter.chat_completion(query)
 
+        tasks = [run_with_semaphore(messages) for messages in message_list]
         return await atqdm.gather(*tasks, desc="Running prompts...")
+
+    def run(self, message_list: List[Dict[str, Any]], max_concurrent: int = 1, **kwargs) -> List[Any]:
+        """Synchronous wrapper that can be called without asyncio.run()."""
+        return asyncio.run(self.run_async(message_list, max_concurrent, **kwargs))
