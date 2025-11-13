@@ -1,0 +1,9 @@
+.idea/
+build/
+scripts/
+*.egg-info/
+__pycache__/
+*.py[cod]
+*$py.class
+dist/
+*.egg
