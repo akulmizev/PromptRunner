@@ -1,3 +1,20 @@
+NLI_BASIC_PROMPT = """
+Read the following Context and Statement (introduced respectively by the [CONTEXT] and [STATEMENT] tags):
+[CONTEXT] {}
+[STATEMENT] {}
+
+Choose one or more from the following:
+If you feel uncertain and you feel that multiple options apply, choose them all instead, even though it might feel contradictory.
+Assuming the context is true, the statement:
+true: is most likely to be true
+either: can be either true or false
+false: is most likely false
+"""
+
+NLI_SYSTEM_PROMPT = """
+Respond only with the label, in all lowercase letters. 
+"""
+
 LIVENLI_SYSTEM_PROMPT = """
 You are an expert at natural language inference tasks. 
 Always provide your responses as valid JSON that can be parsed by Python's json.loads() function.
