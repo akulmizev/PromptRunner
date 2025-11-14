@@ -54,7 +54,7 @@ Or use `ollama` locally instead:
 
 ```python
 # initialize `AsyncRunner`
-runner = AsyncRunner(model="gpt-5-nano", backend="litellm", api_key=api_key)
+runner = AsyncRunner(model="gpt-oss:20b", backend="ollama")
 
 # extract responses with 3 concurrent processes
 responses = runner.run(message_list, max_concurrent=3)
