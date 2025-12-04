@@ -1,10 +1,12 @@
 from .adapters import LiteLLMAdapter, OllamaAdapter, TogetherAIAdapter
 from .prompts import *
-from .runners import AsyncRunner
+from .runners import SyncRunner, AsyncRunner, BatchRunner
 
 
 __all__ = [
     "AsyncRunner",
+    "SyncRunner",
+    "BatchRunner",
     "LiteLLMAdapter",
     "OllamaAdapter",
     "TogetherAIAdapter",
