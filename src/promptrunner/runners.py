@@ -7,7 +7,7 @@ from tqdm.asyncio import tqdm as atqdm
 from tqdm import tqdm as stqdm
 from typing import Any, Dict, List, Type
 
-from .adapters import LLMClientAdapter, TogetherAIAdapter, LiteLLMAdapter, OllamaAdapter
+from .adapters import LLMClientAdapter, TogetherAIAdapter, LiteLLMAdapter, OllamaAdapter, NovitaAIAdapter
 
 
 class BaseRunner(ABC):
@@ -16,6 +16,7 @@ class BaseRunner(ABC):
         "ollama": OllamaAdapter,
         "togetherai": TogetherAIAdapter,
         "litellm": LiteLLMAdapter,
+        "novitaai": NovitaAIAdapter
     }
 
     def __init__(
@@ -37,7 +38,7 @@ class BaseRunner(ABC):
         if adapter_class is None:
             raise ValueError(f"Unknown backend '{self.backend}'. Valid options: {', '.join(self.ADAPTER_MAP.keys())}")
 
-        if self.backend in ["togetherai", "litellm"] and not self.api_key:
+        if self.backend in ["togetherai", "litellm", "novitaai"] and not self.api_key:
             raise ValueError(f"API key required for '{self.backend}' backend.")
 
         init_kwargs = {
@@ -157,10 +158,8 @@ class BatchRunner(BaseRunner):
     def _process_single_batch(
             self,
             message_list: List[List[Dict[str, str]]],
-            request_ids: List[str],
-            poll_interval: int,
-            batch_number: int = None
-    ) -> List[Dict[str, Any]]:
+            request_ids: List[str]
+    ) -> str:
         """Process a single batch and return responses."""
 
         request_list = [
@@ -175,10 +174,17 @@ class BatchRunner(BaseRunner):
 
         batch_id = self.adapter.submit_batch(batch_file=batch_filename)
 
-        batch_label = f" (chunk {batch_number})" if batch_number is not None else ""
-        print(f"\nSuccessfully submitted batch job {batch_id}{batch_label}...")
+        print(f"\nSuccessfully submitted batch job {batch_id}{batch_id}...")
 
-        print(f"\nWaiting for batch job to complete (polling){batch_label}...")
+        return batch_id
+
+    def _poll_batch(
+            self,
+            batch_id: str,
+            poll_interval: int
+    ):
+
+        print(f"\nWaiting for batch job to complete (polling) {batch_id}...")
         get_status = getattr(self.adapter, 'check_batch_status')
 
         while True:
@@ -186,10 +192,10 @@ class BatchRunner(BaseRunner):
             print(f"   -> Current Status: {status}")
 
             if status == "COMPLETED":
-                print(f"\nBatch job completed{batch_label}.")
+                print(f"\nBatch job completed {batch_id}.")
                 break
             elif status in ["FAILED", "CANCELLED"]:
-                raise RuntimeError(f"Batch job{batch_label} failed or was cancelled. Status: {status}")
+                raise RuntimeError(f"Batch job {batch_id} failed or was cancelled. Status: {status}")
 
             time.sleep(poll_interval)
 
@@ -203,47 +209,63 @@ class BatchRunner(BaseRunner):
             self,
             message_list: List[List[Dict[str, str]]],
             request_ids: List[str] = None,
+            await_completion: bool = True,
             poll_interval: int = 30,
             output_path: str = None,
             **kwargs
-    ) -> List[Dict[str, Any]]:
+    ) -> List[Dict[str, Any]] | List[str]:
 
         if request_ids is None:
             request_ids = [f"batch_id_{i + 1}" for i in range(len(message_list))]
             print(f"Request IDs not provided, using arbitrary IDs instead.")
 
+        batch_ids = []
         if self.max_request_load and len(message_list) > self.max_request_load:
             print(f"\nChunking {len(message_list)} requests into batches of {self.max_request_load}...")
 
             chunks = self._chunk_data(message_list, request_ids, self.max_request_load)
-            all_responses = []
 
             for i, (chunk_messages, chunk_ids) in enumerate(chunks, 1):
-                print(f"\n{'=' * 60}")
-                print(f"Processing chunk {i}/{len(chunks)} ({len(chunk_messages)} requests)")
-                print(f"{'=' * 60}")
-
-                chunk_responses = self._process_single_batch(
-                    chunk_messages,
-                    chunk_ids,
-                    poll_interval,
-                    batch_number=i
-                )
-                all_responses.extend(chunk_responses)
-
-            if output_path:
-                with open(output_path, 'w') as f:
-                    for response in all_responses:
-                        f.write(json.dumps(response) + "\n")
-
-            return all_responses
+                batch_id = self._process_single_batch(chunk_messages, chunk_ids)
+                print(f"Submitted batch job {batch_id} ({i}/{len(chunks)}).")
+                batch_ids.append(batch_id)
 
         else:
-            responses = self._process_single_batch(message_list, request_ids, poll_interval)
+            batch_id = self._process_single_batch(message_list, request_ids)
+            print(f"Submitted batch job {batch_id}.")
+            batch_ids.append(batch_id)
 
+        if not await_completion:
             if output_path:
                 with open(output_path, 'w') as f:
-                    for response in responses:
-                        f.write(json.dumps(response) + "\n")
+                    for batch_id in batch_ids:
+                        f.write(json.dumps(batch_id) + "\n")
+            return batch_ids  # Caller can use these to poll later
 
-            return responses
+        responses = []
+        for i, batch_id in enumerate(batch_ids, 1):
+            response = self._poll_batch(batch_id, poll_interval)
+            responses.extend(response)
+
+        if output_path:
+            with open(output_path, 'w') as f:
+                for response in responses:
+                    f.write(json.dumps(response) + "\n")
+
+        return responses
+
+    def load_batch_output(
+            self,
+            batch_ids: List[str]
+    ) -> List[Dict[str, Any]]:
+
+        responses_list = []
+
+        for batch_id in batch_ids:
+            with tempfile.NamedTemporaryFile(mode='w+', delete=False) as f:
+                output_filename = f.name
+                responses = self.adapter.retrieve_batch(batch_id=batch_id, output_file=output_filename)
+                responses_list.extend(responses)
+
+        return responses_list
+

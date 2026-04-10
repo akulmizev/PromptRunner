@@ -5,10 +5,12 @@ from typing import Any, Dict, List, Optional, Union
 
 from litellm import acompletion, completion
 from ollama import AsyncClient, Client
+from openai import OpenAI, AsyncOpenAI
 from together import AsyncTogether, Together
 
 
 THINK_PATTERN = r'<think>(.*?)</think>'
+NOVITA_BASE_URL = "https://api.novita.ai/v3/openai"
 
 
 class LLMClientAdapter(ABC):
@@ -195,3 +197,33 @@ class LiteLLMAdapter(LLMClientAdapter):
     async def _call_client_async(self, query: Dict[str, Any], **kwargs) -> Any:
 
         return await acompletion(model=self.model, api_key=self.api_key, **query, **kwargs)
+
+
+class NovitaAIAdapter(LLMClientAdapter):
+    """
+    Adapter for Novita AI's OpenAI-compatible LLM API.
+    Docs: https://novita.ai/docs/api-reference/model-apis-llm-create-chat-completion
+
+    Model names use the full Novita slug, e.g.:
+        "meta-llama/llama-3.1-8b-instruct"
+        "deepseek/deepseek-r1-turbo"
+    """
+
+    def __init__(self, model: str, api_key: str, async_mode: bool = False) -> None:
+        super().__init__(model, async_mode)
+        client_kwargs = dict(api_key=api_key, base_url=NOVITA_BASE_URL)
+        self.client: Union[AsyncOpenAI, OpenAI] = (
+            AsyncOpenAI(**client_kwargs) if self.async_mode else OpenAI(**client_kwargs)
+        )
+
+    def _process_response(self, response: Any) -> Dict[str, str]:
+        content_raw = response.choices[0].message.content
+        content = self.clean_content(content_raw)
+        reasoning_trace = self.extract_reasoning_trace(content_raw)
+        return {"content": str(content), "reasoning_trace": str(reasoning_trace)}
+
+    def _call_client(self, query: Dict[str, Any], **kwargs) -> Any:
+        return self.client.chat.completions.create(model=self.model, **query, **kwargs)
+
+    async def _call_client_async(self, query: Dict[str, Any], **kwargs) -> Any:
+        return await self.client.chat.completions.create(model=self.model, **query, **kwargs)
