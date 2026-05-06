@@ -1,46 +1,89 @@
 import asyncio
 import json
+import os
 import tempfile
 import time
+import warnings
 from abc import ABC, abstractmethod
 from tqdm.asyncio import tqdm as atqdm
 from tqdm import tqdm as stqdm
 from typing import Any, Dict, List, Type
 
-from .adapters import LLMClientAdapter, TogetherAIAdapter, LiteLLMAdapter, OllamaAdapter, NovitaAIAdapter
+from .adapters import (
+    LLMClientAdapter,
+    OllamaProtocolAdapter,
+    OpenAIProtocolAdapter,
+    AnthropicProtocolAdapter,
+    GoogleProtocolAdapter,
+    LiteLLMProtocolAdapter,
+    TogetherAIProtocolAdapter,
+    PROVIDER_CONFIG,
+)
+
+
+PROVIDER_API_KEY_ENV = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google": "GOOGLE_API_KEY",
+    "togetherai": "TOGETHER_API_KEY",
+    "novitaai": "NOVITA_AI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "litellm": "LITELLM_API_KEY",
+}
 
 
 class BaseRunner(ABC):
 
-    ADAPTER_MAP: Dict[str, Type[OllamaAdapter]] = {
-        "ollama": OllamaAdapter,
-        "togetherai": TogetherAIAdapter,
-        "litellm": LiteLLMAdapter,
-        "novitaai": NovitaAIAdapter
+    PROTOCOL_MAP: Dict[str, Type[LLMClientAdapter]] = {
+        "ollama": OllamaProtocolAdapter,
+        "openai": OpenAIProtocolAdapter,
+        "anthropic": AnthropicProtocolAdapter,
+        "google": GoogleProtocolAdapter,
+        "togetherai": TogetherAIProtocolAdapter,
+        "litellm": LiteLLMProtocolAdapter,
     }
 
     def __init__(
             self,
             model: str,
-            backend: str,
+            provider: str,
+            protocol: str = None,
             api_key: str = None,
             response_kwargs: Dict[str, Any] = None
     ):
         self.model = model
-        self.backend = backend
-        self.api_key = api_key
+        self.provider = provider
         self.response_kwargs = response_kwargs or dict()
 
-    def _initialize_adapter(self, async_mode: bool = False) -> LLMClientAdapter:
+        if provider not in PROVIDER_CONFIG:
+            raise ValueError(f"Unknown provider '{provider}'. Valid options: {', '.join(PROVIDER_CONFIG.keys())}")
 
-        adapter_class = self.ADAPTER_MAP.get(self.backend)
+        provider_config = PROVIDER_CONFIG[provider]
+
+        if protocol is None:
+            self.protocol = provider_config["protocol"]
+        else:
+            self.protocol = protocol
+
+        if self.protocol not in self.PROTOCOL_MAP:
+            raise ValueError(f"Unknown protocol '{self.protocol}'. Valid options: {', '.join(self.PROTOCOL_MAP.keys())}")
+
+        self.api_key = api_key or os.environ.get(PROVIDER_API_KEY_ENV.get(provider, ""))
+
+        if provider_config["requires_api_key"] and not self.api_key:
+            env_var = PROVIDER_API_KEY_ENV.get(provider, "")
+            raise ValueError(
+                f"API key required for '{provider}' provider. "
+                f"Set the {env_var} environment variable or pass api_key explicitly."
+            )
+
+    def _initialize_adapter(self, async_mode: bool = False) -> LLMClientAdapter:
+        adapter_class = self.PROTOCOL_MAP.get(self.protocol)
 
         if adapter_class is None:
-            raise ValueError(f"Unknown backend '{self.backend}'. Valid options: {', '.join(self.ADAPTER_MAP.keys())}")
+            raise ValueError(f"Unknown protocol '{self.protocol}'. Valid options: {', '.join(self.PROTOCOL_MAP.keys())}")
 
-        if self.backend in ["togetherai", "litellm", "novitaai"] and not self.api_key:
-            raise ValueError(f"API key required for '{self.backend}' backend.")
-
+        provider_config = PROVIDER_CONFIG[self.provider]
         init_kwargs = {
             "model": self.model,
             "async_mode": async_mode
@@ -48,6 +91,9 @@ class BaseRunner(ABC):
 
         if self.api_key:
             init_kwargs["api_key"] = self.api_key
+
+        if "base_url" in provider_config:
+            init_kwargs["base_url"] = provider_config["base_url"]
 
         return adapter_class(**init_kwargs)
 
@@ -65,11 +111,21 @@ class AsyncRunner(BaseRunner):
     def __init__(
             self,
             model: str,
-            backend: str,
+            provider: str = None,
+            protocol: str = None,
             api_key: str = None,
-            response_kwargs: Dict[str, Any] = None
+            response_kwargs: Dict[str, Any] = None,
+            backend: str = None
     ) -> None:
-        super().__init__(model, backend, api_key, response_kwargs)
+        if backend is not None:
+            warnings.warn(
+                "The 'backend' parameter is deprecated. Use 'provider' instead.",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            provider = provider or backend
+
+        super().__init__(model, provider, protocol, api_key, response_kwargs)
         self.adapter = self._initialize_adapter(async_mode=True)
 
     async def run_async(self, message_list: List[List[Dict[str, str]]], max_concurrent: int = 1, **kwargs) -> List[Any]:
@@ -79,7 +135,6 @@ class AsyncRunner(BaseRunner):
         async def run_with_semaphore(messages):
             async with semaphore:
                 query = {"messages": messages, **self.response_kwargs}
-                # Use the adapter's async method
                 return await self.adapter.chat_completion_async(query, **kwargs)
 
         tasks = [run_with_semaphore(messages) for messages in message_list]
@@ -99,13 +154,21 @@ class SyncRunner(BaseRunner):
     def __init__(
             self,
             model: str,
-            backend: str,
+            provider: str = None,
+            protocol: str = None,
             api_key: str = None,
-            response_kwargs: Dict[str, Any] = None
+            response_kwargs: Dict[str, Any] = None,
+            backend: str = None
     ) -> None:
-        super().__init__(model, backend, api_key, response_kwargs)
+        if backend is not None:
+            warnings.warn(
+                "The 'backend' parameter is deprecated. Use 'provider' instead.",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            provider = provider or backend
 
-        # Use the utility function to initialize the adapter in SYNC mode
+        super().__init__(model, provider, protocol, api_key, response_kwargs)
         self.adapter = self._initialize_adapter(async_mode=False)
 
     def run(self, message_list: List[List[Dict[str, str]]], **kwargs) -> List[Any]:
@@ -128,18 +191,28 @@ class BatchRunner(BaseRunner):
     def __init__(
             self,
             model: str,
-            backend: str,
+            provider: str = None,
+            protocol: str = None,
             api_key: str = None,
             response_kwargs: Dict[str, Any] = None,
-            max_request_load: int = None
+            max_request_load: int = None,
+            backend: str = None
     ) -> None:
+        if backend is not None:
+            warnings.warn(
+                "The 'backend' parameter is deprecated. Use 'provider' instead.",
+                DeprecationWarning,
+                stacklevel=2
+            )
+            provider = provider or backend
 
-        if backend != "togetherai":
-            raise ValueError("Only togetherai backend is supported for batching.")
-
-        super().__init__(model, backend, api_key, response_kwargs)
+        super().__init__(model, provider, protocol, api_key, response_kwargs)
         self.adapter = self._initialize_adapter(async_mode=False)
         self.max_request_load = max_request_load
+
+        provider_config = PROVIDER_CONFIG[provider]
+        if not provider_config.get("supports_batch", False):
+            raise ValueError(f"Provider '{provider}' does not support batch processing.")
 
     @staticmethod
     def _chunk_data(
@@ -163,7 +236,7 @@ class BatchRunner(BaseRunner):
         """Process a single batch and return responses."""
 
         request_list = [
-            {"custom_id": request_id, "body": {"model": self.model, "messages": messages}} \
+            {"custom_id": request_id, "body": {"model": self.model, "messages": messages, **self.response_kwargs}} \
             for request_id, messages in zip(request_ids, message_list)
         ]
 
@@ -174,7 +247,7 @@ class BatchRunner(BaseRunner):
 
         batch_id = self.adapter.submit_batch(batch_file=batch_filename)
 
-        print(f"\nSuccessfully submitted batch job {batch_id}{batch_id}...")
+        print(f"\nSuccessfully submitted batch job {batch_id}...")
 
         return batch_id
 
@@ -183,7 +256,6 @@ class BatchRunner(BaseRunner):
             batch_id: str,
             poll_interval: int
     ):
-
         print(f"\nWaiting for batch job to complete (polling) {batch_id}...")
         get_status = getattr(self.adapter, 'check_batch_status')
 
@@ -191,10 +263,10 @@ class BatchRunner(BaseRunner):
             status = get_status(batch_id)
             print(f"   -> Current Status: {status}")
 
-            if status == "COMPLETED":
+            if status in ("COMPLETED", "completed", "ended"):
                 print(f"\nBatch job completed {batch_id}.")
                 break
-            elif status in ["FAILED", "CANCELLED"]:
+            elif status in ("FAILED", "failed", "CANCELLED", "cancelled", "EXPIRED", "expired"):
                 raise RuntimeError(f"Batch job {batch_id} failed or was cancelled. Status: {status}")
 
             time.sleep(poll_interval)
@@ -240,7 +312,7 @@ class BatchRunner(BaseRunner):
                 with open(output_path, 'w') as f:
                     for batch_id in batch_ids:
                         f.write(json.dumps(batch_id) + "\n")
-            return batch_ids  # Caller can use these to poll later
+            return batch_ids
 
         responses = []
         for i, batch_id in enumerate(batch_ids, 1):
@@ -268,4 +340,3 @@ class BatchRunner(BaseRunner):
                 responses_list.extend(responses)
 
         return responses_list
-
