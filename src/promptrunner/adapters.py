@@ -49,7 +49,7 @@ PROVIDER_CONFIG = {
     },
     "openrouter": {
         "protocol": "openai",
-        "base_url": "https://openrouter.ai/api",
+        "base_url": "https://openrouter.ai/api/v1",
         "requires_api_key": True,
         "supports_batch": False,
     },
